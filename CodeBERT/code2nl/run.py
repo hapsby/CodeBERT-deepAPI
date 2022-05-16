@@ -43,7 +43,9 @@ MODEL_CLASSES = {'roberta': (RobertaConfig, RobertaModel, RobertaTokenizer)}
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
-                    level = logging.INFO)
+                    level = logging.INFO,
+                    filename='output.log'
+                    )
 logger = logging.getLogger(__name__)
 
 class Example(object):
@@ -73,8 +75,8 @@ def read_examples(filename):
             examples.append(
                 Example(
                         idx = idx,
-                        source=code,
-                        target = nl,
+                        source=nl,
+                        target = code
                         ) 
             )
     return examples
@@ -155,7 +157,20 @@ def set_seed(args):
     torch.manual_seed(args.seed)
     if args.n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
-        
+
+def reset_parameters(model):
+    if hasattr(model, 'reset_parameters'):
+        print("Resetting layer")
+        model.reset_parameters()
+    elif hasattr(model, 'children'):
+        for layer in model.children():
+            reset_parameters(layer)
+    else:
+        print("Layer has no children and no reset_parameters")
+    if hasattr(model, "cuda"):
+        print("Putting in GPU")
+        model.cuda()
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -196,7 +211,9 @@ def main():
     parser.add_argument("--do_lower_case", action='store_true',
                         help="Set this flag if you are using an uncased model.")
     parser.add_argument("--no_cuda", action='store_true',
-                        help="Avoid using CUDA when available") 
+                        help="Avoid using CUDA when available")
+    parser.add_argument("--randomize_params", action='store_true',
+                        help="Undo the pre-training of the model before starting.")
     
     parser.add_argument("--train_batch_size", default=8, type=int,
                         help="Batch size per GPU/CPU for training.")
@@ -255,7 +272,9 @@ def main():
     tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,do_lower_case=args.do_lower_case)
     
     #budild model
-    encoder = model_class.from_pretrained(args.model_name_or_path,config=config)    
+    encoder = model_class.from_pretrained(args.model_name_or_path,config=config)
+    if args.randomize_params:
+        reset_parameters(encoder)
     decoder_layer = nn.TransformerDecoderLayer(d_model=config.hidden_size, nhead=config.num_attention_heads)
     decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
     model=Seq2Seq(encoder=encoder,decoder=decoder,config=config,
@@ -348,8 +367,15 @@ def main():
                 scheduler.step()
                 global_step += 1
                 eval_flag = True
-                
-            if args.do_eval and ((global_step + 1) %args.eval_steps == 0) and eval_flag:
+
+            if args.do_eval and (global_step == 1 or ((global_step + 1) % 10 == 0)) and eval_flag:
+                result = {'global_step': global_step + 1,
+                          'train_loss': round(train_loss, 5)}
+                for key in sorted(result.keys()):
+                    logger.info("  %s = %s", key, str(result[key]))
+                logger.info("  " + "*" * 20)
+
+            if args.do_eval and (global_step == 1 or ((global_step + 1) %args.eval_steps == 0)) and eval_flag:
                 #Eval model with dev dataset
                 tr_loss = 0
                 nb_tr_examples, nb_tr_steps = 0, 0                     
